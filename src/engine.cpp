@@ -27,36 +27,36 @@ void csot::Engine::load_ticks(const std::string& csv_path){
         csot::Tick t;
         std::string curr;
         int i=0;
-        auto process = [&](const std::string& curr) {
+        auto process = [&](const std::string& token) {
             switch(i){
                 case 0:
-                    t.timestamp_ns = std::stoull(curr);
+                    t.timestamp_ns = std::stoull(token);
                     break;
                 case 1:{
-                    auto it=_symbol_table.find(curr);
+                    auto it=_symbol_table.find(token);
                     if(it==_symbol_table.end()){
-                        _symbol_store.push_back(curr);
+                        _symbol_store.push_back(token);
                         std::string_view sv = _symbol_store.back();
-                        _symbol_table.emplace(curr, sv);
+                        _symbol_table.emplace(_symbol_store.back(), sv);
                         t.symbol = sv;
                     }
                     else t.symbol=it->second;
                     break;
                 }
                 case 2:  // bid_px  — double
-                    t.bid_px = std::stod(curr);
+                    t.bid_px = std::stod(token);
                     break;
  
                 case 3:  // ask_px  — double
-                    t.ask_px = std::stod(curr);
+                    t.ask_px = std::stod(token);
                     break;
  
                 case 4:  // bid_qty  — uint32_t
-                    t.bid_qty = static_cast<uint32_t>(std::stoul(curr));
+                    t.bid_qty = static_cast<uint32_t>(std::stoul(token));
                     break;
  
                 case 5:  // ask_qty  — uint32_t
-                    t.ask_qty = static_cast<uint32_t>(std::stoul(curr));
+                    t.ask_qty = static_cast<uint32_t>(std::stoul(token));
                     break;
  
                 default:

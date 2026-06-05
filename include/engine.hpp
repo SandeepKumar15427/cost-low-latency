@@ -1,8 +1,11 @@
 #pragma once
 #include "strategy.hpp"
 #include "histogram.hpp"
-#include<string>
-#include<vector>
+#include <string>
+#include <vector>
+#include <deque>
+#include <unordered_map>
+#include <ostream>
 
 namespace csot{
 class Engine
