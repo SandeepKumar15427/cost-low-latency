@@ -1,6 +1,7 @@
 #include "strategy.hpp"
 
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <string_view>
 #include <vector>
@@ -9,19 +10,15 @@ namespace {
 
 inline constexpr std::size_t  WINDOW         = 64;
 inline constexpr double       INV_WINDOW     = 1.0 / 64.0;
-inline constexpr double       ENTRY_Z_SQ     = 2.0 * 2.0;
-inline constexpr double       EXIT_Z_SQ      = 0.5 * 0.5;
-inline constexpr double       EPSILON_VAR    = 1e-9 * 1e-9;
+inline constexpr double       ENTRY_Z        = 2.0;
+inline constexpr double       EXIT_Z         = 0.5;
+inline constexpr double       EPSILON_STDDEV = 1e-9;
 inline constexpr std::size_t  MAX_SYMBOLS    = 64;
 
-struct alignas(64) SymbolState { // Cache-line aligned to prevent false sharing in later weeks
+// alignas(64) ensures the struct fits perfectly into a CPU cache line
+struct alignas(64) SymbolState { 
     double          mids[WINDOW]{};   
     std::string_view name{};          
-    
-    // Running sums to eliminate O(N) loops
-    double          sum_mids = 0.0;
-    double          sum_sq_mids = 0.0;
-    
     std::uint32_t   count  = 0;       
     std::uint32_t   head   = 0;       
     std::int32_t    position = 0;     
@@ -34,64 +31,55 @@ public:
     std::vector<csot::Order> on_tick(const csot::Tick& t) override {
         SymbolState& st = slot(t.symbol);
 
-        // Step 1 — Mid price
+        // Step 1 — mid price
         const double mid = (t.bid_px + t.ask_px) * 0.5;
-        const double mid_sq = mid * mid;
 
-        // Step 2 — O(1) Running sums & ring buffer update
-        const double old_mid = st.mids[st.head];
-        
-        st.sum_mids    = st.sum_mids - old_mid + mid;
-        st.sum_sq_mids = st.sum_sq_mids - (old_mid * old_mid) + mid_sq;
-
+        // Step 2 — append to ring buffer (Restored exact sequence)
         st.mids[st.head] = mid;
         st.head = (st.head + 1) & 63;   // fast mod because WINDOW == 64
+        if (st.count < WINDOW) [[unlikely]] ++st.count;
 
-        // Step 3 — Warm-up guard (Highly unlikely to be in warmup over millions of ticks)
-        if (st.count < WINDOW) [[unlikely]] {
-            ++st.count;
-            return {};
-        }
+        // Step 3 — warm-up guard
+        if (st.count < WINDOW) [[unlikely]] return {};
 
-        // Step 4 — O(1) Mean and Variance
+        // Step 4 — mean and population stddev (Restored strict O(N) math)
         double sum = 0.0;
         for (double x : st.mids) sum += x;
         const double mean = sum * INV_WINDOW;
 
-        double sq_diff_sum = 0.0;
+        double sq = 0.0;
         for (double x : st.mids) {
             const double d = x - mean;
-            sq_diff_sum += d * d;
+            sq += d * d;
         }
-        const double variance = sq_diff_sum * INV_WINDOW;
+        const double stddev = std::sqrt(sq * INV_WINDOW);
 
-        if (variance < EPSILON_VAR) [[unlikely]] return {};
+        if (stddev < EPSILON_STDDEV) [[unlikely]] return {};
 
-        // Step 5 — Z-Score logic WITHOUT std::sqrt
-        const double diff = mid - mean;
-        const double sq_diff = diff * diff;
+        // Step 5 — z-score (Restored strict division)
+        const double z     = (mid - mean) / stddev;
+        const double abs_z = std::fabs(z);
 
-        // Step 6 & 7 — Trading Logic
+        // Step 6 — entry (only when flat)
         if (st.position == 0) [[likely]] {
-            // Entry logic
-            if (sq_diff >= ENTRY_Z_SQ * variance) [[unlikely]] {
-                // Determine direction based on the sign of the difference
-                if (diff > 0.0)
-                    return {{ csot::Order::Side::SELL, t.symbol, t.bid_px, 1 }};
-                else
-                    return {{ csot::Order::Side::BUY,  t.symbol, t.ask_px, 1 }};
-            }
-            return {};
-        } else {
-            // Exit logic
-            if (sq_diff <= EXIT_Z_SQ * variance) [[unlikely]] {
-                if (st.position > 0)
-                    return {{ csot::Order::Side::SELL, t.symbol, t.bid_px, static_cast<std::uint32_t>(st.position) }};
-                else
-                    return {{ csot::Order::Side::BUY,  t.symbol, t.ask_px, static_cast<std::uint32_t>(-st.position) }};
-            }
+            if (z >= ENTRY_Z) [[unlikely]]
+                return {{ csot::Order::Side::SELL, t.symbol, t.bid_px, 1 }};
+            if (z <= -ENTRY_Z) [[unlikely]]
+                return {{ csot::Order::Side::BUY,  t.symbol, t.ask_px, 1 }};
             return {};
         }
+
+        // Step 7 — exit (only when holding)
+        if (abs_z <= EXIT_Z) [[unlikely]] {
+            if (st.position > 0)
+                return {{ csot::Order::Side::SELL, t.symbol, t.bid_px,
+                          static_cast<std::uint32_t>(st.position) }};
+            if (st.position < 0)
+                return {{ csot::Order::Side::BUY,  t.symbol, t.ask_px,
+                          static_cast<std::uint32_t>(-st.position) }};
+        }
+
+        return {};
     }
 
     void on_fill(const csot::Order& o, double, std::uint32_t fill_qty) override {
@@ -107,13 +95,13 @@ private:
     std::size_t n_symbols_ = 0;   
 
     SymbolState& slot(std::string_view sym) {
-        // Fast path: pointer identity
+        // Fast path: pointer identity check directly against the interned string memory
         for (std::size_t i = 0; i < n_symbols_; ++i) {
             if (states_[i].name.data() == sym.data()) [[likely]] 
                 return states_[i];
         }
 
-        // Slow path: string equality (only happens on interned collisions or first sight)
+        // Slow path: string equality
         for (std::size_t i = 0; i < n_symbols_; ++i) {
             if (states_[i].name == sym)
                 return states_[i];
