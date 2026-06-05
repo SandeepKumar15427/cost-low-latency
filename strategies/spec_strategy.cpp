@@ -54,8 +54,16 @@ public:
         }
 
         // Step 4 — O(1) Mean and Variance
-        const double mean = st.sum_mids * INV_WINDOW;
-        const double variance = (st.sum_sq_mids * INV_WINDOW) - (mean * mean);
+        double sum = 0.0;
+        for (double x : st.mids) sum += x;
+        const double mean = sum * INV_WINDOW;
+
+        double sq_diff_sum = 0.0;
+        for (double x : st.mids) {
+            const double d = x - mean;
+            sq_diff_sum += d * d;
+        }
+        const double variance = sq_diff_sum * INV_WINDOW;
 
         if (variance < EPSILON_VAR) [[unlikely]] return {};
 
