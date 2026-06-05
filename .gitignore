@@ -9,6 +9,8 @@ build-*/
 
 # Generated market data (large)
 data/synthetic_large.csv
+data/public.csv
+data/tiny.csv
 data/*.bin
 
 # perf / profiling output
